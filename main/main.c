@@ -5,10 +5,12 @@
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "esp_timer.h"
 
 // --- USER .h FILES ---
 #include "config.h"
 #include "WiFi/wifi.h"
+#include "sensor.h"
 
 static const char *TAG = "app";
 
@@ -32,5 +34,20 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "starting WiFi... (STA mode)");
-    wifi_init_start();     // Connect to WiFi (blocks until connected)
+    wifi_init_start();                  // Connect to WiFi (blocks until connected)
+
+    if (sensor_init() != ESP_OK) {      // Initialize the HTU21D temp/hum sensor
+        ESP_LOGE(TAG, "Sensor init failed");
+        return;
+    }
+
+    while (1) {
+        float t, h;
+        if (sensor_read(&t, &h) == ESP_OK) {
+            ESP_LOGI(TAG, "Temperature is: %.2f C, Humidity is: %.2f %%", t, h);
+        } else {
+            ESP_LOGW(TAG, "Sensor read failed");
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));    // Sleep 2 s, other tasks can run
+    }
 }
