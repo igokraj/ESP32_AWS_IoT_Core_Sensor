@@ -62,8 +62,8 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-// Set up WiFi in station mode and BLOCK until the first successful connection
-void wifi_init_start(void)
+// Set up WiFi in station mode and wait up to timeout_ms for the first connection
+esp_err_t wifi_init_start(uint32_t timeout_ms)
 {
     s_wifi_event_group = xEventGroupCreate();
 
@@ -114,22 +114,29 @@ void wifi_init_start(void)
 
     ESP_LOGI(TAG, "wifi_init_sta finished.");
 
-    /* Block here until the first successful connection. The reconnect timer keeps
-       retrying in the background, so this waits as long as needed instead of
-       giving up */
-    xEventGroupWaitBits(s_wifi_event_group,
+    /* Wait for the first successful connection, but not forever: with the router
+       off, an endless wait would keep the radio on and drain the battery.
+       The reconnect timer keeps retrying in the background meanwhile */
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
             WIFI_CONNECTED_BIT,
             pdFALSE,
             pdFALSE,
-            portMAX_DELAY);
+            pdMS_TO_TICKS(timeout_ms));     // Give up after timeout_ms
+
+    if (!(bits & WIFI_CONNECTED_BIT)) {
+        ESP_LOGW(TAG, "not connected within %" PRIu32 " ms", timeout_ms);
+        return ESP_ERR_TIMEOUT;
+    }
 
     ESP_LOGI(TAG, "connected to ap SSID: %s", WIFI_SSID);
+    return ESP_OK;
 }
 
 /* Clean shutdown before deep sleep or a reboot. Releasing the association makes
    the next wake-up reconnect cleaner than simply cutting power to the radio */
 void wifi_stop(void)
 {
-    s_stopping = true;      // Suppress the reconnect attempt the stop below would trigger
+    s_stopping = true;                  // Suppress the reconnect attempt the stop below would trigger
+    esp_timer_stop(s_reconnect_timer);  // Cancel a pending reconnect (error if not armed is harmless)
     esp_wifi_stop();
 }

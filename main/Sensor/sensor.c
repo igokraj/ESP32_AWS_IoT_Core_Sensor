@@ -7,6 +7,7 @@
 #include "esp_check.h"
 #include "driver/i2c_master.h"
 
+// --- USER .h FILES ---
 #include "config.h"     // I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO
 
 static const char *TAG = "sensor";

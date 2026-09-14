@@ -79,3 +79,6 @@ Desktop.ini
 
 # Secrets (WiFi credentials, API keys)
 secrets.h
+
+# AWS IoT certificates and private key
+main/Certs/
