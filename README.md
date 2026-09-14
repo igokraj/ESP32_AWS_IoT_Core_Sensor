@@ -1,12 +1,34 @@
-# ESP32 Sensor AWS
+# ESP32 Sensor AWS Iot Core
 
 Celem tego projektu było zintegrowanie czujnika temperatury i wilgotności na ESP32 z AWS IoT Core -> publiczną usługą firmy Amazon służącą do łączenia urządzeń IoT z chmurą, bezpiecznego zarządzania nimi oraz przetwarzania generowanych przez nie danych. AWS działa jako broker MQTT i stanowi punkt wejścia dla wszelkich danych przesyłanych przez urządzenie do chmury.
 
 The goal of this project was to integrate a temperature and humidity sensor based on the ESP32 with AWS IoT Core—Amazon’s public service for connecting IoT devices to the cloud, securely managing them, and processing the data they generate. AWS acts as an MQTT broker and serves as the entry point for all data transmitted by the device to the cloud.
 
+![Project mounted on a breadboard](images/Breadboard.png)
+
 ![CloudWatch dashboard](images/Dashboard.png)
 
 ![Project mounted on a breadboard](images/Breadboard.png)
+
+## Policy (JSON) 
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "iot:Connect",
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:client/<CLIENT_ID>"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Publish",
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/sensors/<CLIENT_ID>/data"
+    }
+  ]
+}
+
+![Rule settings](images/RULE.png)
 
 ## How it works
 
