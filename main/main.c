@@ -16,7 +16,7 @@
 
 static const char *TAG = "app";
 
-#define WAKEUP_TIME (20ULL * 1000000ULL)   // Deep sleep interval, in microseconds
+#define WAKEUP_TIME (180ULL * 1000000ULL)   // Deep sleep interval, in microseconds
 #define WIFI_CONNECT_TIMEOUT_MS  15000      // Max time to wait for WiFi after wake-up
 
 static void led_init(void) {
