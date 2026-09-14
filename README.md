@@ -4,14 +4,13 @@ Celem tego projektu było zintegrowanie czujnika temperatury i wilgotności na E
 
 The goal of this project was to integrate a temperature and humidity sensor based on the ESP32 with AWS IoT Core—Amazon’s public service for connecting IoT devices to the cloud, securely managing them, and processing the data they generate. AWS acts as an MQTT broker and serves as the entry point for all data transmitted by the device to the cloud.
 
-![Project mounted on a breadboard](images/Breadboard.png)
+<img src="images/Breadboard.jpg" alt="Project mounted on a breadboard" width="400">
 
 ![CloudWatch dashboard](images/Dashboard.png)
 
-![Project mounted on a breadboard](images/Breadboard.png)
-
 ## Policy (JSON) 
 
+```json
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -27,6 +26,7 @@ The goal of this project was to integrate a temperature and humidity sensor base
     }
   ]
 }
+```
 
 ![Rule settings](images/RULE.png)
 
