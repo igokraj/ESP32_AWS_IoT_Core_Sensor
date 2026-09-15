@@ -29,7 +29,7 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=d:\\Projekty_ESP32_VS\\TEST\\build"
+    "--compile-commands-dir=d:\\Projekty_ESP32_VS\\ESP32_Sensor_AWS\\build"
   ],
   "idf.flashType": "UART"
 }
