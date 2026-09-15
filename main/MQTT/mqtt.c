@@ -4,9 +4,11 @@
 #include "driver/gpio.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <string.h>     // strlen, memcmp, strlcpy
 
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "cJSON.h"      // JSON parser bundled with ESP-IDF
 
 // --- USER .h FILES ---
 #include "mqtt.h"
@@ -14,6 +16,10 @@
 
 // Must match the iot:Publish resource in the AWS IoT policy
 #define MQTT_TOPIC  "sensors/" AWS_IOT_CLIENT_ID "/data"
+
+// AWS IoT Jobs reserved topics — thing name must equal AWS_IOT_CLIENT_ID
+#define JOBS_PREFIX      "$aws/things/" AWS_IOT_CLIENT_ID "/jobs/"
+#define JOBS_START_NEXT  JOBS_PREFIX "start-next"
 
 static const char *TAG = "mqtt";
 
@@ -25,6 +31,55 @@ extern const char private_key_pem[] asm("_binary_private_pem_key_start");     //
 
 static esp_mqtt_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;   // written by MQTT task, read by app_main
+static volatile bool s_subscribed = false;    // SUBSCRIBED event arrived
+static volatile bool s_job_answered = false;  // start-next answer arrived
+static volatile int s_acked_msg_id = -1;      // msg_id of the last QoS 1 publish the broker confirmed
+static bool s_job_found = false;
+static mqtt_job_t s_job;                      // filled from the start-next answer
+
+// True when the event's topic is exactly `topic` (event->topic is not NUL-terminated)
+static bool topic_is(esp_mqtt_event_handle_t event, const char *topic)
+{
+    return event->topic_len == (int)strlen(topic) &&
+           memcmp(event->topic, topic, event->topic_len) == 0;
+}
+
+// Pick jobId, version and url out of the start-next/accepted payload
+static void parse_start_next(const char *data, int len)
+{
+    cJSON *root = cJSON_ParseWithLength(data, len);
+    cJSON *execution = cJSON_GetObjectItem(root, "execution");  // missing = no pending job
+    cJSON *id = cJSON_GetObjectItem(execution, "jobId");
+    cJSON *doc = cJSON_GetObjectItem(execution, "jobDocument");
+    cJSON *version = cJSON_GetObjectItem(doc, "version");
+    cJSON *url = cJSON_GetObjectItem(doc, "url");
+
+    s_job_found = cJSON_IsString(id) && cJSON_IsString(version) && cJSON_IsString(url) &&
+                  strlen(url->valuestring) < sizeof(s_job.url);
+    if (s_job_found) {
+        strlcpy(s_job.id, id->valuestring, sizeof(s_job.id));
+        strlcpy(s_job.version, version->valuestring, sizeof(s_job.version));
+        strlcpy(s_job.url, url->valuestring, sizeof(s_job.url));
+    }
+    cJSON_Delete(root);     // free the memory cJSON allocated
+}
+
+// Poll a flag set by the MQTT task, give up after timeout_ms
+static esp_err_t wait_for_flag(const volatile bool *flag, uint32_t timeout_ms)
+{
+    const TickType_t step = pdMS_TO_TICKS(100);
+    const TickType_t limit = pdMS_TO_TICKS(timeout_ms);
+    TickType_t waited = 0;
+
+    while (!*flag) {
+        if (waited >= limit) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(step);
+        waited += step;
+    }
+    return ESP_OK;
+}
 
 /* Runs in the context of the MQTT client task
    Keep it short: update state, log — no blocking calls */
@@ -54,6 +109,29 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         gpio_set_level(MQTT_LED_PIN, 0);
         break;
     }
+    case MQTT_EVENT_SUBSCRIBED:
+        s_subscribed = true;
+        break;
+    case MQTT_EVENT_PUBLISHED: {
+        esp_mqtt_event_handle_t event = event_data;
+        s_acked_msg_id = event->msg_id;     // broker confirmed a QoS 1 publish
+        break;
+    }
+    case MQTT_EVENT_DATA: {
+        esp_mqtt_event_handle_t event = event_data;
+        if (event->data_len != event->total_data_len) {
+            ESP_LOGE(TAG, "Message too big for MQTT buffer (%d bytes)", event->total_data_len);
+            break;
+        }
+        if (topic_is(event, JOBS_START_NEXT "/accepted")) {
+            parse_start_next(event->data, event->data_len);
+            s_job_answered = true;
+        } else if (topic_is(event, JOBS_START_NEXT "/rejected")) {
+            ESP_LOGW(TAG, "Job request rejected: %.*s", event->data_len, event->data);
+            s_job_answered = true;
+        }
+        break;
+    }
     default:
         break;
     }
@@ -71,6 +149,7 @@ void mqtt_start(void)
         .credentials.client_id = AWS_IOT_CLIENT_ID,     // Must match iot:Connect in the policy
         .credentials.authentication.certificate = device_cert_pem,
         .credentials.authentication.key = private_key_pem,
+        .buffer.size = 4096,    // start-next answer carries a ~1-2 kB presigned URL
     };
 
     s_client = esp_mqtt_client_init(&cfg);
@@ -109,17 +188,71 @@ esp_err_t mqtt_publish_reading(float temperature, float humidity)
    only one shot at publishing — without this wait the publish would be skipped */
 esp_err_t mqtt_wait_for_connection(uint32_t timeout_ms)
 {
+    return wait_for_flag(&s_connected, timeout_ms);
+}
+
+/* Ask AWS IoT Jobs for the next pending job of this thing
+   AWS answers on start-next/accepted: with "execution" when a job is waiting, without it otherwise */
+const mqtt_job_t *mqtt_get_next_job(uint32_t timeout_ms)
+{
+    if (s_client == NULL || !s_connected) {
+        return NULL;
+    }
+
+    // 1. Listen for both answers (accepted / rejected) before asking
+    s_subscribed = false;
+    if (esp_mqtt_client_subscribe_single(s_client, JOBS_START_NEXT "/+", 1) < 0 ||
+        wait_for_flag(&s_subscribed, timeout_ms) != ESP_OK) {
+        ESP_LOGW(TAG, "Subscribe to job topics failed");
+        return NULL;
+    }
+
+    // 2. Ask for the next job — "{}" means no extra parameters
+    s_job_answered = false;
+    s_job_found = false;
+    if (esp_mqtt_client_publish(s_client, JOBS_START_NEXT, "{}", 0, 1, 0) < 0 ||
+        wait_for_flag(&s_job_answered, timeout_ms) != ESP_OK) {
+        ESP_LOGW(TAG, "No answer from AWS IoT Jobs");
+        return NULL;
+    }
+
+    if (!s_job_found) {
+        ESP_LOGI(TAG, "No pending job");
+        return NULL;
+    }
+    ESP_LOGI(TAG, "Job %s: version %s", s_job.id, s_job.version);
+    return &s_job;
+}
+
+// Report the job result to AWS and wait for the broker to confirm it (QoS 1)
+esp_err_t mqtt_update_job_status(const char *job_id, const char *status, uint32_t timeout_ms)
+{
+    if (s_client == NULL || !s_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char topic[128];
+    char payload[32];
+    snprintf(topic, sizeof(topic), JOBS_PREFIX "%s/update", job_id);
+    snprintf(payload, sizeof(payload), "{\"status\":\"%s\"}", status);
+
+    int msg_id = esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 0);
+    if (msg_id < 0) {
+        return ESP_FAIL;
+    }
+
+    /* Without this wait a reboot or deep sleep right after could cut the message off
+       and the job would stay IN_PROGRESS in AWS */
     const TickType_t step = pdMS_TO_TICKS(100);
     const TickType_t limit = pdMS_TO_TICKS(timeout_ms);
-    TickType_t waited = 0;
-
-    while (!s_connected) {
+    for (TickType_t waited = 0; s_acked_msg_id != msg_id; waited += step) {
         if (waited >= limit) {
+            ESP_LOGW(TAG, "Job %s status %s not confirmed", job_id, status);
             return ESP_ERR_TIMEOUT;
         }
         vTaskDelay(step);
-        waited += step;
     }
+    ESP_LOGI(TAG, "Job %s -> %s", job_id, status);
     return ESP_OK;
 }
 

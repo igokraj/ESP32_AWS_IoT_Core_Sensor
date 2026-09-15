@@ -44,6 +44,14 @@ static void blacklist_version(const char *version)
     }
 }
 
+// True when this version was installed before and failed diagnostics
+bool ota_is_version_blacklisted(const char *version)
+{
+    char bad_version[32];   // same size as esp_app_desc_t.version
+    get_blacklisted_version(bad_version, sizeof(bad_version));
+    return bad_version[0] != '\0' && strcmp(version, bad_version) == 0;
+}
+
 // Ask the server whether a newer image exists and install it if so
 ota_result_t ota_check_and_update(const char *url)
 {
@@ -60,9 +68,9 @@ ota_result_t ota_check_and_update(const char *url)
     esp_https_ota_handle_t handle = NULL;
     esp_err_t err = esp_https_ota_begin(&ota_config, &handle);
     if (err != ESP_OK) {
-        // Server down / unreachable
-        ESP_LOGW(TAG, "No OTA server (%s)", esp_err_to_name(err));
-        return OTA_RESULT_NO_UPDATE;
+        // S3 unreachable, or the presigned URL expired / was refused (HTTP 403)
+        ESP_LOGW(TAG, "Cannot start download (%s)", esp_err_to_name(err));
+        return OTA_RESULT_ERROR;
     }
 
     // 2. Read the version string out of the downloaded header
@@ -75,9 +83,7 @@ ota_result_t ota_check_and_update(const char *url)
     }
 
     // 2b. Skip a version we already know is broken — no point retrying it forever
-    char bad_version[sizeof(new_app.version)];
-    get_blacklisted_version(bad_version, sizeof(bad_version));
-    if (bad_version[0] != '\0' && strcmp(new_app.version, bad_version) == 0) {
+    if (ota_is_version_blacklisted(new_app.version)) {
         ESP_LOGW(TAG, "Version %s previously failed diagnostics — skipping", new_app.version);
         esp_https_ota_abort(handle);
         return OTA_RESULT_NO_UPDATE;
