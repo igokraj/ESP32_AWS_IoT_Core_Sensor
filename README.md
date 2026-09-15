@@ -1,8 +1,8 @@
 # ESP32 Sensor AWS Iot Core
 
-Celem tego projektu było zintegrowanie czujnika temperatury i wilgotności na ESP32 z AWS IoT Core -> publiczną usługą firmy Amazon służącą do łączenia urządzeń IoT z chmurą, bezpiecznego zarządzania nimi oraz przetwarzania generowanych przez nie danych. AWS działa jako broker MQTT i stanowi punkt wejścia dla wszelkich danych przesyłanych przez urządzenie do chmury.
+Celem tego projektu było zintegrowanie czujnika temperatury i wilgotności na ESP32 z AWS IoT Core -> publiczną usługą firmy Amazon służącą do łączenia urządzeń IoT z chmurą, bezpiecznego zarządzania nimi oraz przetwarzania generowanych przez nie danych. AWS działa jako broker MQTT i stanowi punkt wejścia dla wszelkich danych przesyłanych przez urządzenie do chmury. Urządzenie obsługuje również aktualizacje firmware przez sieć (OTA) z wykorzystaniem AWS IoT Jobs i Amazon S3, z automatycznym powrotem do poprzedniej wersji w razie awarii.
 
-The goal of this project was to integrate a temperature and humidity sensor based on the ESP32 with AWS IoT Core—Amazon’s public service for connecting IoT devices to the cloud, securely managing them, and processing the data they generate. AWS acts as an MQTT broker and serves as the entry point for all data transmitted by the device to the cloud.
+The goal of this project was to integrate a temperature and humidity sensor based on the ESP32 with AWS IoT Core—Amazon’s public service for connecting IoT devices to the cloud, securely managing them, and processing the data they generate. AWS acts as an MQTT broker and serves as the entry point for all data transmitted by the device to the cloud. The device also supports over-the-air (OTA) firmware updates through AWS IoT Jobs and Amazon S3, with automatic rollback if a new version fails.
 
 
 ## Breadboard
@@ -28,10 +28,21 @@ The goal of this project was to integrate a temperature and humidity sensor base
       "Effect": "Allow",
       "Action": "iot:Publish",
       "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/sensors/<CLIENT_ID>/data"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["iot:Publish", "iot:Receive"],
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/<CLIENT_ID>/jobs/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Subscribe",
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/<CLIENT_ID>/jobs/*"
     }
   ]
 }
 ```
+
 ## Rule Settings 
 
 ![Rule settings](images/RULE.png)
@@ -41,9 +52,18 @@ The goal of this project was to integrate a temperature and humidity sensor base
 1. The ESP32-S3 wakes up from deep sleep and connects to WiFi.
 2. It reads temperature and humidity from an HTU21D sensor over I2C.
 3. The reading is published to AWS IoT Core over MQTT as JSON, e.g. `{"t":23.45,"h":58.20}`, on the topic `sensors/<client_id>/data`.
-4. The device goes back to deep sleep for 60 seconds.
+4. The device asks AWS IoT Jobs for a pending firmware update. If a job with a new version is waiting, the image is downloaded from a private S3 bucket via a presigned URL and installed in the second OTA partition. The new version reports the job as succeeded, or the device rolls back to the previous version if it cannot reach AWS.
+5. The device goes back to deep sleep for 60 seconds.
 
 The readings are visualized on an Amazon CloudWatch dashboard.
+
+## OTA
+
+![S3 bucket with firmware and job document](images/Bucket.png)
+
+![IAM role for presigned URLs](images/IAM%20Role.png)
+
+![Completed OTA job](images/Remote%20Job.png)
 
 ## Design assumptions
 
